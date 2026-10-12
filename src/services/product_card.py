@@ -14,7 +14,13 @@ from src.db.repositories.generation_repo import GenerationRepository
 from src.providers.ai.base import GenerationType
 from src.services.ai_service import AIService
 from src.services.billing_service import BillingService
-from src.services.card_prompts import IDEAS_PROMPT, CardIdeas, build_card_prompt
+from src.services.card_prompts import (
+    IDEAS_PROMPT,
+    CardAssetType,
+    CardIdeas,
+    Marketplace,
+    build_marketplace_card_prompt,
+)
 
 
 class CardError(Exception):
@@ -166,9 +172,15 @@ class ProductCardService:
             )
             raise
 
-    def prompt(self, ideas: CardIdeas, index: int) -> str:
+    def prompt(
+        self,
+        ideas: CardIdeas,
+        index: int,
+        marketplace: Marketplace = Marketplace.UNIVERSAL,
+        asset_type: CardAssetType = CardAssetType.COVER,
+    ) -> str:
         """Собрать полный запрос для выбранной идеи."""
-        return build_card_prompt(ideas, index)
+        return build_marketplace_card_prompt(ideas, index, marketplace, asset_type)
 
 
 def create_card_service() -> ProductCardService:

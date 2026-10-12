@@ -44,7 +44,13 @@ from src.core.exceptions import (
     ModelTemporarilyUnavailableError,
 )
 from src.db.base import DatabaseSession
-from src.services.card_prompts import IDEA_COUNT, CardIdeas
+from src.services.card_prompts import (
+    IDEA_COUNT,
+    CardAssetType,
+    CardIdeas,
+    Marketplace,
+    parse_card_options,
+)
 from src.services.product_card import CardError, ProductCardService, create_card_service
 from src.utils import create_input_file_from_url
 from src.utils.i18n import Localization
@@ -93,7 +99,15 @@ async def handle_product_photo(
         service = card_service if card_service is not None else create_card_service()
         session_id = token_hex(6)
         file_id = message.photo[-1].file_id
-        await state.set_data({"session_id": session_id, "image_file_id": file_id})
+        marketplace, asset_type = parse_card_options(getattr(message, "caption", None))
+        await state.set_data(
+            {
+                "session_id": session_id,
+                "image_file_id": file_id,
+                "marketplace": marketplace.value,
+                "asset_type": asset_type.value,
+            }
+        )
         await state.set_state(CardStates.analyzing)
         processing: Message | None = None
         try:
@@ -191,7 +205,14 @@ async def handle_idea_selection(
             return
         service = card_service if card_service is not None else create_card_service()
         ideas = CardIdeas.model_validate(data["ideas"])
-        prompt = service.prompt(ideas, int(parts[2]))
+        marketplace = Marketplace(data.get("marketplace", Marketplace.UNIVERSAL))
+        asset_type = CardAssetType(data.get("asset_type", CardAssetType.COVER))
+        prompt = service.prompt(
+            ideas,
+            int(parts[2]),
+            marketplace=marketplace,
+            asset_type=asset_type,
+        )
         await state.update_data(base_prompt=prompt, prompt_changes="")
         await show_prompt_review(message, state, l10n, prompt)
         with suppress(TelegramAPIError):

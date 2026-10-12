@@ -1,10 +1,83 @@
 """Проверяемые идеи и промпты предметной фотографии."""
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 IDEA_COUNT = 3
 MAX_CORRECTION_LENGTH = 1500
 MAX_FINAL_PROMPT_LENGTH = 3500
+
+
+class Marketplace(StrEnum):
+    """Площадки с разными требованиями к визуалу карточки."""
+
+    UNIVERSAL = "universal"
+    OZON = "ozon"
+    WILDBERRIES = "wildberries"
+    YANDEX_MARKET = "yandex_market"
+    STORE = "store"
+    SOCIAL = "social"
+
+
+class CardAssetType(StrEnum):
+    """Тип изображения, которое нужно получить от генератора."""
+
+    COVER = "cover"
+    INFOGRAPHIC = "infographic"
+    LIFESTYLE = "lifestyle"
+
+
+_MARKETPLACE_RULES = {
+    Marketplace.UNIVERSAL: "нейтральная композиция для каталога магазина",
+    Marketplace.OZON: "вертикальный каталог OZON, товар крупно и с чистыми полями",
+    Marketplace.WILDBERRIES: (
+        "вертикальная карточка Wildberries, товар занимает большую часть кадра"
+    ),
+    Marketplace.YANDEX_MARKET: ("каталог Яндекс Маркета, светлый фон и ясная иерархия"),
+    Marketplace.STORE: "витрина интернет-магазина, премиальная коммерческая подача",
+    Marketplace.SOCIAL: (
+        "социальные сети, выразительный первый кадр с безопасными полями"
+    ),
+}
+
+_ASSET_RULES = {
+    CardAssetType.COVER: (
+        "Главный кадр: товар сразу понятен, без декоративного текста и лишних объектов."
+    ),
+    CardAssetType.INFOGRAPHIC: (
+        "Инфографика: оставь свободные области под текст, "
+        "но сам текст на изображении не рисуй."
+    ),
+    CardAssetType.LIFESTYLE: (
+        "Фото в использовании: покажи естественный сценарий применения товара "
+        "в реальной обстановке."
+    ),
+}
+
+
+def parse_card_options(caption: str | None) -> tuple[Marketplace, CardAssetType]:
+    """Распознать площадку и тип результата из подписи к фото."""
+    value = (caption or "").casefold()
+    marketplace = Marketplace.UNIVERSAL
+    if "ozon" in value or "озон" in value:
+        marketplace = Marketplace.OZON
+    elif "wildberries" in value or "вайлдберрис" in value or "wb" in value:
+        marketplace = Marketplace.WILDBERRIES
+    elif "яндекс" in value or "yandex" in value or "маркет" in value:
+        marketplace = Marketplace.YANDEX_MARKET
+    elif "магазин" in value or "store" in value:
+        marketplace = Marketplace.STORE
+    elif "соц" in value or "social" in value:
+        marketplace = Marketplace.SOCIAL
+
+    asset_type = CardAssetType.COVER
+    if "инфограф" in value or "инфо" in value:
+        asset_type = CardAssetType.INFOGRAPHIC
+    elif "использ" in value or "лайф" in value or "lifestyle" in value:
+        asset_type = CardAssetType.LIFESTYLE
+    return marketplace, asset_type
+
 
 IDEAS_PROMPT = """Ты предметный фотограф для маркетплейсов. Изучи фото товара.
 Верни только JSON: {"product": "описание видимых деталей товара",
@@ -59,6 +132,21 @@ def build_card_prompt(ideas: CardIdeas, index: int) -> str:
         "логотип и детали с референса. Не заменяй товар похожим. "
         "Товар главный объект, естественный свет и реалистичный масштаб. "
         "Без текста, коллажа и копий товара."
+    )
+
+
+def build_marketplace_card_prompt(
+    ideas: CardIdeas,
+    index: int,
+    marketplace: Marketplace = Marketplace.UNIVERSAL,
+    asset_type: CardAssetType = CardAssetType.COVER,
+) -> str:
+    """Добавить к базовой сцене требования выбранной площадки и формата."""
+    base_prompt = build_card_prompt(ideas, index)
+    return (
+        f"{base_prompt} {_MARKETPLACE_RULES[marketplace]}. "
+        f"{_ASSET_RULES[asset_type]} "
+        "Соотношение сторон 4:5 или 1:1 по уместности, без водяных знаков."
     )
 
 

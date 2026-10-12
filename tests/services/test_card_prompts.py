@@ -4,11 +4,15 @@ import pytest
 from pydantic import ValidationError
 
 from src.services.card_prompts import (
+    CardAssetType,
     CardIdea,
     CardIdeas,
+    Marketplace,
     amend_card_prompt,
     build_card_prompt,
     build_correction_prompt,
+    build_marketplace_card_prompt,
+    parse_card_options,
 )
 
 
@@ -112,3 +116,37 @@ def test_build_card_prompt_rejects_invalid_index() -> None:
     """Несуществующая кнопка не должна приводить к случайному сценарию."""
     with pytest.raises(ValueError, match="Неизвестная идея"):
         build_card_prompt(make_ideas(), 3)
+
+
+def test_marketplace_options_change_visual_prompt() -> None:
+    """Площадка и тип изображения явно передаются в генератор."""
+    prompt = build_marketplace_card_prompt(
+        make_ideas(), 0, Marketplace.OZON, CardAssetType.INFOGRAPHIC
+    )
+
+    assert "OZON" in prompt
+    assert "Инфографика" in prompt
+    assert "свободные области" in prompt
+
+
+@pytest.mark.parametrize(
+    ("caption", "marketplace", "asset_type"),
+    [
+        (
+            "WB, фото в использовании",
+            Marketplace.WILDBERRIES,
+            CardAssetType.LIFESTYLE,
+        ),
+        (
+            "Яндекс Маркет, инфографика",
+            Marketplace.YANDEX_MARKET,
+            CardAssetType.INFOGRAPHIC,
+        ),
+        (None, Marketplace.UNIVERSAL, CardAssetType.COVER),
+    ],
+)
+def test_parse_card_options_from_caption(
+    caption: str | None, marketplace: Marketplace, asset_type: CardAssetType
+) -> None:
+    """Подпись к фото выбирает площадку и формат без отдельного диалога."""
+    assert parse_card_options(caption) == (marketplace, asset_type)

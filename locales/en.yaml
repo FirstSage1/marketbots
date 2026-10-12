@@ -308,11 +308,11 @@ edit_completed: |
   Request: {prompt}
 
 # /card — фото товара и три индивидуальные идеи использования
-card_send_photo: "Send a photo of one product. I will suggest three ideas showing it in everyday use."
+card_send_photo: "Send a photo of one product. You may add a caption with OZON, WB, Yandex Market, store or social media and a format: cover, infographic or lifestyle. Example: 'OZON, infographic'."
 card_please_send_photo: "Send the product as a photo, not a file. Restart with /card."
 card_no_models_available: "Product analysis or image models are unavailable. Try /card later."
 card_analyzing: "Examining your product and preparing three ideas..."
-card_choose_idea: "Choose one of three ideas. You can then amend the prompt or create the photo immediately. Photo price: {price} tokens; ideas are included."
+card_choose_idea: "Choose a scene for the card. The marketplace and format come from the photo caption; you can amend the prompt or create the image. Price: {price} tokens; analysis is included."
 card_prompt_review: "This is the final prompt. Would you like to amend it before creating the photo?"
 card_prompt_edit: "Amend the prompt"
 card_prompt_generate: "Create photo without changes"
