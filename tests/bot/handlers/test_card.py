@@ -1,0 +1,172 @@
+"""Проверки выбора идеи, устаревших кнопок и полного промпта."""
+
+import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from io import BytesIO
+from unittest.mock import AsyncMock, MagicMock
+
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
+
+from src.bot.handlers.card import (
+    cmd_card,
+    handle_idea_selection,
+    handle_product_photo,
+    handle_prompt_generation,
+)
+from src.bot.states.card import CardStates
+from src.core.exceptions import ModelTemporarilyUnavailableError
+from src.services.product_card import ProductCardService
+from tests.services.test_card_prompts import make_ideas
+
+
+async def test_full_flow_and_duplicate_click() -> None:
+    """Две одновременные кнопки дают только одну генерацию и полный промпт."""
+    state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=2, user_id=3))
+    message = MagicMock(spec=Message)
+    message.from_user = MagicMock(id=3)
+    message.photo = [MagicMock(file_id="reference")]
+    menu = MagicMock(spec=Message)
+    menu.message_id = 42
+    menu.delete = AsyncMock()
+    message.answer = AsyncMock(return_value=menu)
+    menu.answer = AsyncMock(return_value=menu)
+    menu.answer_photo = AsyncMock(
+        return_value=MagicMock(
+            photo=[MagicMock(file_id="generated-result")],
+        )
+    )
+    menu.edit_reply_markup = AsyncMock()
+    l10n = MagicMock()
+    l10n.get.side_effect = lambda key, **_: key
+    bot = MagicMock()
+    bot.download = AsyncMock(side_effect=lambda *_: BytesIO(b"photo"))
+    service = MagicMock(spec=ProductCardService)
+    service.config = MagicMock()
+    service.suggest = AsyncMock(return_value=make_ideas())
+    service.prompt.return_value = "п" * 1900
+
+    async def generate(
+        session: object,
+        user_id: int,
+        image: bytes,
+        prompt: str,
+        deliver: Callable[[str, str], Awaitable[None]],
+    ) -> None:
+        assert prompt == "п" * 1900
+        await deliver("https://example.com/photo.png", prompt)
+
+    service.generate = AsyncMock(side_effect=generate)
+
+    @asynccontextmanager
+    async def session_factory() -> AsyncIterator[MagicMock]:
+        yield MagicMock()
+
+    await cmd_card(message, state, l10n)
+    await handle_product_photo(message, state, l10n, bot, service, session_factory)
+    assert await state.get_state() == CardStates.waiting_for_idea.state
+    keyboard = message.answer.call_args.kwargs["reply_markup"]
+    assert len(keyboard.inline_keyboard) == 3
+    callback = MagicMock(message=menu)
+    callback.from_user.id = 3
+    callback.data = keyboard.inline_keyboard[1][0].callback_data
+    callback.answer = AsyncMock()
+    await asyncio.gather(
+        *[
+            handle_idea_selection(callback, state, l10n, bot, service, session_factory)
+            for _ in range(2)
+        ]
+    )
+    service.generate.assert_not_awaited()
+    assert await state.get_state() == CardStates.waiting_for_prompt_confirmation.state
+    data = await state.get_data()
+    callback.data = f"card_generate:{data['session_id']}:{data['prompt_revision']}"
+    await asyncio.gather(
+        *[
+            handle_prompt_generation(
+                callback, state, l10n, bot, service, session_factory
+            )
+            for _ in range(2)
+        ]
+    )
+    service.generate.assert_awaited_once()
+    menu.answer_photo.assert_awaited_once()
+    assert await state.get_state() == CardStates.waiting_for_correction.state
+    assert (await state.get_data())["result_file_id"] == "generated-result"
+
+
+async def test_old_callback_does_not_clear_new_session() -> None:
+    """Старая кнопка не меняет новое фото или выбранный сценарий."""
+    state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=5, user_id=6))
+    await state.set_state(CardStates.waiting_for_idea)
+    await state.set_data({"session_id": "new", "menu_id": 99})
+    callback = MagicMock()
+    callback.data = "card:old:0"
+    callback.answer = AsyncMock()
+    callback.message.answer = AsyncMock()
+    service = MagicMock(spec=ProductCardService)
+    await handle_idea_selection(callback, state, MagicMock(), MagicMock(), service)
+    service.generate.assert_not_called()
+    assert (await state.get_data())["session_id"] == "new"
+
+
+async def test_unavailable_model_preserves_menu_for_retry() -> None:
+    """Временная ошибка оставляет исходное фото и идеи для ручного повтора."""
+    state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=8, user_id=9))
+    await state.set_state(CardStates.waiting_for_prompt_confirmation)
+    await state.set_data(
+        {
+            "session_id": "test",
+            "prompt_menu_id": 42,
+            "prompt_revision": "version",
+            "final_prompt": "промпт с поправками",
+            "image_file_id": "reference",
+            "ideas": make_ideas().model_dump(),
+        }
+    )
+    menu = MagicMock(spec=Message)
+    menu.message_id = 42
+    processing = MagicMock(spec=Message)
+    processing.delete = AsyncMock()
+    menu.answer = AsyncMock(side_effect=[processing, menu, menu, processing])
+    menu.edit_reply_markup = AsyncMock()
+    menu.answer_photo = AsyncMock()
+    callback = MagicMock(message=menu, data="card_generate:test:version")
+    callback.from_user.id = 9
+    callback.answer = AsyncMock()
+    bot = MagicMock()
+    bot.download = AsyncMock(return_value=BytesIO(b"photo"))
+    l10n = MagicMock()
+    l10n.get.side_effect = lambda key, **_: key
+    service = MagicMock(spec=ProductCardService)
+    service.prompt.return_value = "промпт"
+    service.generate = AsyncMock(
+        side_effect=ModelTemporarilyUnavailableError(
+            "Модель временно недоступна",
+            provider="anymodel",
+            model_id="cx/gpt-image-2",
+            is_retryable=True,
+        )
+    )
+
+    @asynccontextmanager
+    async def session_factory() -> AsyncIterator[MagicMock]:
+        yield MagicMock()
+
+    await handle_prompt_generation(callback, state, l10n, bot, service, session_factory)
+    assert await state.get_state() == CardStates.waiting_for_prompt_confirmation.state
+    assert (await state.get_data())["image_file_id"] == "reference"
+    assert (await state.get_data())["final_prompt"] == "промпт с поправками"
+    assert (await state.get_data())["prompt_revision"] != "version"
+    menu.answer.assert_any_await("card_model_unavailable")
+    processing.delete.assert_awaited_once()
+    menu.answer_photo.assert_not_awaited()
+
+    service.generate.side_effect = None
+    data = await state.get_data()
+    callback.data = f"card_generate:test:{data['prompt_revision']}"
+    await handle_prompt_generation(callback, state, l10n, bot, service, session_factory)
+    assert service.generate.await_count == 2
