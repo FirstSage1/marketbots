@@ -71,3 +71,6 @@ data/media/videos/*
 coverage.json
 .DS_Store
 .agent/
+
+# Временные каталоги подготовки загрузки в Amvera
+.amvera-upload-*/
