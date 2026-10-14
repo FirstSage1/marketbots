@@ -24,7 +24,11 @@
 # ==============================================================================
 
 # При ошибке в любой команде — остановить скрипт
-set -e
+set -eo pipefail
+
+# Импорты и конфигурация должны находиться относительно корня проекта.
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+export PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}"
 
 # ==============================================================================
 # ФУНКЦИЯ ЭКРАНИРОВАНИЯ HTML
@@ -237,7 +241,9 @@ migration_log=$(mktemp)
 # Запускаем миграции с таймаутом и выводом в реальном времени
 # timeout — прерывает команду если она выполняется дольше указанного времени
 # |& tee — показывает вывод в терминале И сохраняет в файл
-if ! timeout ${MIGRATION_TIMEOUT} alembic upgrade head |& tee "$migration_log"; then
+if timeout ${MIGRATION_TIMEOUT} python -m alembic upgrade head |& tee "$migration_log"; then
+    :
+else
     exit_code=$?
     echo ""
 
@@ -327,4 +333,4 @@ echo ""
 # ==============================================================================
 echo "=== Этап 3: Запуск приложения ==="
 echo "Запускаем uvicorn..."
-exec uvicorn src.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"
+exec python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"
