@@ -593,7 +593,7 @@ legal:
   #
   # Шаблон документа: docs/legal/privacy_policy_template.md
   # Оставьте пустым, если документы ещё не готовы (бот предупредит о настройке).
-  privacy_policy_url: ""
+  privacy_policy_url: "https://disk.yandex.ru/d/3QOhbWj5YA44JA"
 
   # Ссылка на Пользовательское соглашение (оферту).
   # Документ должен быть доступен по этой ссылке всем пользователям.
@@ -602,7 +602,7 @@ legal:
   #
   # Шаблон документа: docs/legal/terms_of_service_template.md
   # Оставьте пустым, если документы ещё не готовы.
-  terms_of_service_url: ""
+  terms_of_service_url: "https://disk.yandex.ru/d/IdxAk0g2_gjtGQ"
 
 
 # ==============================================================================
