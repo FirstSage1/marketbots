@@ -320,4 +320,5 @@ class TestHealth:
             "telegram_mode": "webhook",
             "legal_enabled": True,
             "legal_documents_configured": True,
+            "legal_version": "1.1",
         }

@@ -28,4 +28,5 @@ async def health_check(request: Request) -> dict[str, str | bool]:
         "legal_documents_configured": bool(
             legal.get("documents_configured", False)
         ),
+        "legal_version": str(legal.get("version", "unknown")),
     }
