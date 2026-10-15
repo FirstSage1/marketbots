@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.telegram import router
+from src.api.health import router as health_router
 
 
 @pytest.fixture
@@ -26,10 +27,17 @@ def test_app() -> FastAPI:
     """
     app = FastAPI()
     app.include_router(router)
+    app.include_router(health_router)
 
     # Создаём моки для bot и dp
     app.state.bot = MagicMock()
     app.state.dp = MagicMock()
+    app.state.telegram_mode = "webhook"
+    app.state.legal_consent = {
+        "enabled": True,
+        "documents_configured": True,
+        "version": "1.1",
+    }
 
     return app
 
@@ -70,6 +78,7 @@ class TestTelegramWebhook:
         # Assert
         assert response.status_code == 200
 
+
     def test_telegram_webhook_returns_200_with_empty_body(
         self, client: TestClient
     ) -> None:
@@ -82,7 +91,6 @@ class TestTelegramWebhook:
 
         # Assert
         assert response.status_code == 200
-
     def test_telegram_webhook_returns_200_with_invalid_json(
         self, client: TestClient
     ) -> None:
@@ -295,3 +303,21 @@ class TestTelegramWebhook:
         assert call_args.args[1] == test_app.state.bot
         # Третий аргумент — dp из app.state
         assert call_args.args[2] == test_app.state.dp
+
+
+class TestHealth:
+    """Проверки диагностического health endpoint."""
+
+    def test_health_reports_telegram_and_legal_state(
+        self, client: TestClient
+    ) -> None:
+        """Health должен показывать режим Telegram и состояние legal."""
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "status": "ok",
+            "telegram_mode": "webhook",
+            "legal_enabled": True,
+            "legal_documents_configured": True,
+        }

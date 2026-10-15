@@ -4,13 +4,13 @@
 - GET /health — health check для мониторинга и liveness probes
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health_check() -> dict[str, str]:
+async def health_check(request: Request) -> dict[str, str | bool]:
     """Проверка состояния сервиса.
 
     Используется для мониторинга и проверки доступности.
@@ -20,4 +20,12 @@ async def health_check() -> dict[str, str]:
     Returns:
         Словарь со статусом "ok"
     """
-    return {"status": "ok"}
+    legal = getattr(request.app.state, "legal_consent", {})
+    return {
+        "status": "ok",
+        "telegram_mode": getattr(request.app.state, "telegram_mode", "starting"),
+        "legal_enabled": bool(legal.get("enabled", False)),
+        "legal_documents_configured": bool(
+            legal.get("documents_configured", False)
+        ),
+    }
