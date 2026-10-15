@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sys
 from typing import TYPE_CHECKING, Any
 
 from src.bot.loader import create_bot, create_dispatcher, register_bot_commands
@@ -79,6 +78,7 @@ class ApplicationLifecycle:
         self.scheduler: AsyncIOScheduler | None = None
         self.polling_task: asyncio.Task[None] | None = None
         self._shutting_down = False
+        self._app: FastAPI | None = None
 
         # Фоновые задачи для некритичных операций
         self._background_tasks: list[asyncio.Task[None]] = []
@@ -106,6 +106,7 @@ class ApplicationLifecycle:
             SystemExit: При критических ошибках конфигурации webhook
         """
         logger.info("Запуск приложения...")
+        self._app = app
 
         # Проверяем статус миграций базы данных
         # Выводим предупреждение если миграции не применены
@@ -122,6 +123,21 @@ class ApplicationLifecycle:
         # Сохраняем bot и dp в app.state для доступа из API endpoints
         app.state.bot = self.bot
         app.state.dp = self.dp
+
+        app.state.telegram_mode = (
+            "webhook" if self.settings.app.is_production else "polling"
+        )
+        app.state.legal_consent = {
+            "enabled": self.yaml_config.legal.enabled,
+            "documents_configured": self.yaml_config.legal.has_documents(),
+            "version": self.yaml_config.legal.version,
+        }
+        logger.info(
+            "Юридическое согласие: enabled=%s, documents_configured=%s, version=%s",
+            self.yaml_config.legal.enabled,
+            self.yaml_config.legal.has_documents(),
+            self.yaml_config.legal.version,
+        )
 
         # === ПАРАЛЛЕЛЬНАЯ ИНИЦИАЛИЗАЦИЯ ===
         # Запускаем независимые операции параллельно для ускорения startup
@@ -162,7 +178,8 @@ class ApplicationLifecycle:
             self.settings.channel,
         )
 
-        # Устанавливаем webhook (критично для production)
+        # Устанавливаем webhook. При проблеме с доменом переключаемся на polling,
+        # чтобы бот продолжал отвечать, пока настройки домена исправляют.
         await self._start_webhook_mode()
 
         # Запускаем планировщик
@@ -370,10 +387,10 @@ class ApplicationLifecycle:
         """Запустить webhook mode для production.
 
         Нормализует домен и устанавливает webhook на Telegram API.
-        При ошибках завершает приложение через sys.exit(1).
+        При ошибке удаляет webhook и запускает резервный long polling.
 
-        Raises:
-            SystemExit: При критических ошибках настройки webhook
+        Резервный polling нужен, чтобы ошибка домена Amvera не оставляла
+        контейнер запущенным без обработки сообщений.
         """
         assert self.bot is not None
         assert self.settings.app.domain is not None
@@ -384,19 +401,38 @@ class ApplicationLifecycle:
         try:
             webhook_ok = await setup_webhook(self.bot, domain)
             if not webhook_ok:
-                # Не удалось установить webhook после всех попыток
                 logger.error(
                     "❌ Не удалось установить webhook после 3 попыток. "
-                    "Проверьте доступность домена и настройки сети."
+                    "Переключаюсь на long polling. Проверьте APP__DOMAIN."
                 )
-                sys.exit(1)
+                await self._start_polling_fallback()
+                return
 
             logger.info("✅ Webhook mode активирован")
 
         except RuntimeError as e:
-            # Ошибка конфигурации (4xx от Telegram API)
-            logger.error("❌ Фатальная ошибка конфигурации webhook: %s", e)
-            sys.exit(1)
+            # Ошибка конфигурации (4xx от Telegram API). Polling позволяет
+            # сохранить доступность бота до исправления домена или SSL.
+            logger.error(
+                "❌ Ошибка конфигурации webhook: %s. "
+                "Переключаюсь на long polling.",
+                e,
+            )
+            await self._start_polling_fallback()
+
+    async def _start_polling_fallback(self) -> None:
+        """Запустить polling после неудачной настройки webhook."""
+        assert self.bot is not None
+
+        await remove_webhook(self.bot)
+        if self._app is not None:
+            self._app.state.telegram_mode = "polling_fallback"
+        if self.polling_task is None:
+            self.polling_task = asyncio.create_task(
+                self._run_polling_resilient(),
+                name="telegram_polling_fallback",
+            )
+        logger.warning("⚠️ Резервный polling активирован")
 
     async def _cleanup_stuck_generations(self) -> None:
         """Очистить зависшие генерации при startup.
