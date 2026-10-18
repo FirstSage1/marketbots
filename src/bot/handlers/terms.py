@@ -13,7 +13,7 @@
 3. Если документы не настроены — показываем предупреждение
 """
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
@@ -27,6 +27,7 @@ from src.bot.keyboards.inline.legal import (
     create_legal_documents_keyboard,
     create_terms_acceptance_keyboard,
 )
+from src.bot.middleware.legal_consent import scope_legal_version
 from src.bot.static import WELCOME_IMAGE
 from src.config.yaml_config import yaml_config
 from src.db.base import DatabaseSession
@@ -82,7 +83,11 @@ async def cmd_terms(message: Message, l10n: Localization) -> None:
 
 
 @router.callback_query(F.data == "legal:accept")
-async def callback_accept_terms(callback: CallbackQuery, l10n: Localization) -> None:
+async def callback_accept_terms(
+    callback: CallbackQuery,
+    l10n: Localization,
+    bot: Bot | None = None,
+) -> None:
     """Обработать нажатие кнопки «Принимаю».
 
     Сохраняет согласие пользователя с юридическими документами:
@@ -118,19 +123,22 @@ async def callback_accept_terms(callback: CallbackQuery, l10n: Localization) -> 
             return
 
         # Проверяем, не принял ли пользователь уже эту версию
-        if not repo.needs_terms_acceptance(user, legal_config.version):
+        scoped_version = scope_legal_version(
+            legal_config.version, bot.id if bot is not None else None
+        )
+        if not repo.needs_terms_acceptance(user, scoped_version):
             await callback.answer(l10n.get("legal_already_accepted"))
             # Удаляем клавиатуру, оставляем сообщение
             await callback.message.edit_reply_markup(reply_markup=None)
             return
 
         # Сохраняем согласие
-        await repo.accept_terms(user, legal_config.version)
+        await repo.accept_terms(user, scoped_version)
 
         logger.info(
             "Пользователь принял условия: id=%d, version=%s",
             callback.from_user.id,
-            legal_config.version,
+            scoped_version,
         )
 
         # Начисляем бонус при регистрации (если биллинг включён и бонус ещё не начислен)

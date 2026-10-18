@@ -14,10 +14,11 @@
 - При обновлении версии документов запрашивает повторное согласие
 """
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.filters import CommandStart
 from aiogram.types import FSInputFile, Message, ReplyKeyboardRemove
 
+from src.bot.middleware.legal_consent import scope_legal_version
 from src.bot.static import WELCOME_IMAGE
 from src.config.yaml_config import yaml_config
 from src.db.base import DatabaseSession
@@ -98,7 +99,11 @@ def _detect_user_language(telegram_language_code: str | None) -> str:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, l10n: Localization) -> None:
+async def cmd_start(
+    message: Message,
+    l10n: Localization,
+    bot: Bot | None = None,
+) -> None:
     """Обработать команду /start.
 
     При первом запуске:
@@ -200,7 +205,12 @@ async def cmd_start(message: Message, l10n: Localization) -> None:
             if (
                 legal_config.enabled
                 and legal_config.has_documents()
-                and repo.needs_terms_acceptance(user, legal_config.version)
+                and repo.needs_terms_acceptance(
+                    user,
+                    scope_legal_version(
+                        legal_config.version, bot.id if bot is not None else None
+                    ),
+                )
             ):
                 needs_terms_acceptance = True
                 logger.info(
