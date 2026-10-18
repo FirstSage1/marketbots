@@ -213,4 +213,10 @@ async def show_terms_acceptance_request(
         reply_markup=keyboard,
     )
 
+    logger.info(
+        "Запрос согласия отправлен: user_id=%s, version=%s",
+        message.from_user.id if message.from_user else "unknown",
+        legal_config.version,
+    )
+
     return True
