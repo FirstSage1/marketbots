@@ -19,6 +19,7 @@ run:
   # 2. Запускает приложение (uvicorn)
   command: bash entrypoint.sh
   containerPort: 8000
+  servicePort: 8000
   # Персистентное хранилище — данные сохраняются между деплоями
   # База данных SQLite хранится в /data/bot.db
   persistenceMount: /data
