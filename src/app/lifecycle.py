@@ -514,8 +514,11 @@ class ApplicationLifecycle:
 
         # Получаем информацию о боте для формирования ссылки
         bot_info = await self.bot.get_me()
+        if self._app is not None:
+            self._app.state.bot_username = bot_info.username
+            self._app.state.bot_id = bot_info.id
         bot_url = f"https://t.me/{bot_info.username}"
-        logger.info("🤖 Бот: %s", bot_url)
+        logger.info("🤖 Бот: %s (id=%d)", bot_url, bot_info.id)
 
         # Формируем URL админки если она включена
         if self.settings.admin.is_enabled:

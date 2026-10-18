@@ -30,6 +30,10 @@ async def health_check(request: Request) -> dict[str, str | bool | int | None]:
         ),
         "legal_version": str(legal.get("version", "unknown")),
     }
+    bot_username = getattr(request.app.state, "bot_username", None)
+    bot_id = getattr(request.app.state, "bot_id", None)
+    if bot_username is not None and bot_id is not None:
+        result.update({"bot_username": bot_username, "bot_id": bot_id})
     polling_task = getattr(request.app.state, "polling_task", None)
     if polling_task is not None:
         polling_alive = not polling_task.done()
