@@ -150,6 +150,18 @@ class LegalConsentMiddleware(BaseMiddleware):
 
         user_id = telegram_user.id
 
+        # /start должен дойти до обработчика, который создаёт пользователя
+        # и показывает запрос согласия в одном последовательном сценарии.
+        if isinstance(event, Message):
+            command = (getattr(event, "text", None) or "").split(maxsplit=1)
+            command = command[0] if command else ""
+            bot_username = getattr(data.get("bot"), "username", None)
+            start_commands = {"/start"}
+            if bot_username:
+                start_commands.add(f"/start@{bot_username}")
+            if command in start_commands:
+                return await handler(event, data)
+
         # Callback "legal:accept" должен проходить без проверки
         # Иначе пользователь не сможет принять условия
         if isinstance(event, CallbackQuery) and event.data == CALLBACK_LEGAL_ACCEPT:
