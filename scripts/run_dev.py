@@ -10,6 +10,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / ".env"
+CONFIG_FILE = PROJECT_ROOT / "config.yaml"
 POLL_INTERVAL_SECONDS = 1.0
 
 
@@ -60,19 +61,30 @@ def stop_server(child: subprocess.Popen[str]) -> None:
 
 
 def main() -> int:
-    """Перезапускать приложение после изменения .env."""
+    """Перезапускать приложение после изменения настроек."""
     child = start_server()
-    last_mtime = ENV_FILE.stat().st_mtime_ns if ENV_FILE.exists() else 0
+    watched_files = (ENV_FILE, CONFIG_FILE)
+    last_mtimes = {
+        path: path.stat().st_mtime_ns if path.exists() else 0
+        for path in watched_files
+    }
 
     try:
         while child.poll() is None:
             time.sleep(POLL_INTERVAL_SECONDS)
-            current_mtime = ENV_FILE.stat().st_mtime_ns if ENV_FILE.exists() else 0
-            if current_mtime == last_mtime:
+            changed = False
+            for path in watched_files:
+                current_mtime = path.stat().st_mtime_ns if path.exists() else 0
+                if current_mtime != last_mtimes[path]:
+                    last_mtimes[path] = current_mtime
+                    changed = True
+
+            if not changed:
                 continue
 
-            last_mtime = current_mtime
-            sys.stderr.write("Изменён .env — перезапуск приложения\n")
+            sys.stderr.write(
+                "Изменены .env или config.yaml — перезапуск приложения\n"
+            )
             stop_server(child)
             child = start_server()
     except KeyboardInterrupt:
