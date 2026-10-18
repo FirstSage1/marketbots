@@ -79,6 +79,8 @@ class ApplicationLifecycle:
         self.polling_task: asyncio.Task[None] | None = None
         self._shutting_down = False
         self._app: FastAPI | None = None
+        self._polling_restarts = 0
+        self._polling_last_error: str | None = None
 
         # Фоновые задачи для некритичных операций
         self._background_tasks: list[asyncio.Task[None]] = []
@@ -252,6 +254,9 @@ class ApplicationLifecycle:
             self._run_polling_resilient(),
             name="telegram_polling",
         )
+        app.state.polling_task = self.polling_task
+        app.state.polling_restarts = self._polling_restarts
+        app.state.polling_last_error = self._polling_last_error
         logger.info("✅ Polling mode активирован")
 
         # === ФАЗА 3: Фоновые задачи ===
@@ -362,7 +367,12 @@ class ApplicationLifecycle:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as error:
+                self._polling_restarts += 1
+                self._polling_last_error = f"{type(error).__name__}: {error}"
+                if self._app is not None:
+                    self._app.state.polling_restarts = self._polling_restarts
+                    self._app.state.polling_last_error = self._polling_last_error
                 logger.exception(
                     "Polling остановлен из-за ошибки; повтор через %d сек.", delay
                 )
@@ -423,15 +433,18 @@ class ApplicationLifecycle:
     async def _start_polling_fallback(self) -> None:
         """Запустить polling после неудачной настройки webhook."""
         assert self.bot is not None
+        assert self._app is not None
 
         await remove_webhook(self.bot)
-        if self._app is not None:
-            self._app.state.telegram_mode = "polling_fallback"
+        self._app.state.telegram_mode = "polling_fallback"
         if self.polling_task is None:
             self.polling_task = asyncio.create_task(
                 self._run_polling_resilient(),
                 name="telegram_polling_fallback",
             )
+            self._app.state.polling_task = self.polling_task
+            self._app.state.polling_restarts = self._polling_restarts
+            self._app.state.polling_last_error = self._polling_last_error
         logger.warning("⚠️ Резервный polling активирован")
 
     async def _cleanup_stuck_generations(self) -> None:
