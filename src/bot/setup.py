@@ -113,6 +113,7 @@ def setup_middlewares(
             legal_config=yaml_config.legal,
             # Кешируем на 24 часа — версия документов меняется редко
             cache_ttl_seconds=86400,
+            bot_id=bot.id,
         )
         dp.message.middleware(legal_middleware)
         dp.callback_query.middleware(legal_middleware)

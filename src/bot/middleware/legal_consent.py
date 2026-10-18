@@ -55,6 +55,13 @@ CALLBACK_LEGAL_ACCEPT = "legal:accept"
 DEFAULT_CACHE_TTL_SECONDS = 86400
 
 
+def scope_legal_version(version: str, bot_id: int | None) -> str:
+    """Привязать версию документов к конкретному Telegram-боту."""
+    if bot_id is None:
+        return version
+    return f"{bot_id}:{version}"
+
+
 class TimeProvider(Protocol):
     """Протокол для получения текущего времени (для тестирования)."""
 
@@ -86,6 +93,7 @@ class LegalConsentMiddleware(BaseMiddleware):
         legal_config: "LegalConfig",
         cache_ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS,
         time_provider: TimeProvider | None = None,
+        bot_id: int | None = None,
     ) -> None:
         """Создать middleware для проверки согласия.
 
@@ -99,6 +107,7 @@ class LegalConsentMiddleware(BaseMiddleware):
         self._legal_config = legal_config
         self._cache_ttl_seconds = cache_ttl_seconds
         self._time_provider = time_provider or default_time_provider
+        self._bot_id = bot_id
 
         # Кеш: {user_id: (accepted_version: str | None, expires_at: float)}
         self._cache: dict[int, tuple[str | None, float]] = {}
@@ -148,6 +157,8 @@ class LegalConsentMiddleware(BaseMiddleware):
             self.clear_cache(user_id)
             return await handler(event, data)
 
+        data["legal_bot_id"] = self._bot_id
+
         # Проверяем согласие (из кеша или БД)
         # Передаём telegram_user для автоматической регистрации если пользователя нет
         has_consent = await self._check_consent(user_id, telegram_user)
@@ -186,7 +197,7 @@ class LegalConsentMiddleware(BaseMiddleware):
             True если принял актуальную версию, False если нет.
         """
         current_time = self._time_provider()
-        required_version = self._legal_config.version
+        required_version = scope_legal_version(self._legal_config.version, self._bot_id)
 
         # Проверяем кеш
         if user_id in self._cache:
