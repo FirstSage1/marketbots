@@ -10,7 +10,7 @@ router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-async def health_check(request: Request) -> dict[str, str | bool]:
+async def health_check(request: Request) -> dict[str, str | bool | int | None]:
     """Проверка состояния сервиса.
 
     Используется для мониторинга и проверки доступности.
@@ -21,7 +21,7 @@ async def health_check(request: Request) -> dict[str, str | bool]:
         Словарь со статусом "ok"
     """
     legal = getattr(request.app.state, "legal_consent", {})
-    return {
+    result: dict[str, str | bool | int | None] = {
         "status": "ok",
         "telegram_mode": getattr(request.app.state, "telegram_mode", "starting"),
         "legal_enabled": bool(legal.get("enabled", False)),
@@ -30,3 +30,24 @@ async def health_check(request: Request) -> dict[str, str | bool]:
         ),
         "legal_version": str(legal.get("version", "unknown")),
     }
+    bot_username = getattr(request.app.state, "bot_username", None)
+    bot_id = getattr(request.app.state, "bot_id", None)
+    if bot_username is not None and bot_id is not None:
+        result.update({"bot_username": bot_username, "bot_id": bot_id})
+    polling_task = getattr(request.app.state, "polling_task", None)
+    if polling_task is not None:
+        polling_alive = not polling_task.done()
+        if not polling_alive:
+            result["status"] = "degraded"
+        result.update(
+            {
+                "polling_alive": polling_alive,
+                "polling_restarts": getattr(
+                    request.app.state, "polling_restarts", 0
+                ),
+                "polling_last_error": getattr(
+                    request.app.state, "polling_last_error", None
+                ),
+            }
+        )
+    return result

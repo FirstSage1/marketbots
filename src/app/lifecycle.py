@@ -18,6 +18,8 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any
 
+from aiogram.exceptions import TelegramConflictError
+
 from src.bot.loader import create_bot, create_dispatcher, register_bot_commands
 from src.db.base import DatabaseSession
 from src.db.exceptions import DatabaseError
@@ -79,6 +81,8 @@ class ApplicationLifecycle:
         self.polling_task: asyncio.Task[None] | None = None
         self._shutting_down = False
         self._app: FastAPI | None = None
+        self._polling_restarts = 0
+        self._polling_last_error: str | None = None
 
         # Фоновые задачи для некритичных операций
         self._background_tasks: list[asyncio.Task[None]] = []
@@ -107,6 +111,7 @@ class ApplicationLifecycle:
         """
         logger.info("Запуск приложения...")
         self._app = app
+        self._shutting_down = False
 
         # Проверяем статус миграций базы данных
         # Выводим предупреждение если миграции не применены
@@ -252,6 +257,9 @@ class ApplicationLifecycle:
             self._run_polling_resilient(),
             name="telegram_polling",
         )
+        app.state.polling_task = self.polling_task
+        app.state.polling_restarts = self._polling_restarts
+        app.state.polling_last_error = self._polling_last_error
         logger.info("✅ Polling mode активирован")
 
         # === ФАЗА 3: Фоновые задачи ===
@@ -327,10 +335,17 @@ class ApplicationLifecycle:
 
         # Останавливаем polling (если был запущен)
         if self.polling_task is not None:
-            self.polling_task.cancel()
+            # Сначала просим Dispatcher завершить внутренний цикл polling.
+            # Это освобождает getUpdates до закрытия HTTP-сессии и следующего запуска.
+            if self.dp is not None:
+                with contextlib.suppress(RuntimeError):
+                    await self.dp.stop_polling()
+            if not self.polling_task.done():
+                self.polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.polling_task
             logger.debug("Polling остановлен")
+            self.polling_task = None
 
         # Закрываем сессию бота
         if self.bot is not None:
@@ -362,7 +377,27 @@ class ApplicationLifecycle:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except TelegramConflictError as error:
+                # Telegram разрешает только один getUpdates на токен.
+                # Повторять запрос бессмысленно, пока другой процесс не остановлен.
+                self._polling_restarts += 1
+                self._polling_last_error = f"{type(error).__name__}: {error}"
+                if self._app is not None:
+                    self._app.state.polling_restarts = self._polling_restarts
+                    self._app.state.polling_last_error = self._polling_last_error
+                    self._app.state.telegram_mode = "polling_conflict"
+                logger.error(
+                    "Polling остановлен: токен уже используется другим процессом "
+                    "или webhook не освобождён. Остановите второй экземпляр и "
+                    "перезапустите только один процесс."
+                )
+                return
+            except Exception as error:
+                self._polling_restarts += 1
+                self._polling_last_error = f"{type(error).__name__}: {error}"
+                if self._app is not None:
+                    self._app.state.polling_restarts = self._polling_restarts
+                    self._app.state.polling_last_error = self._polling_last_error
                 logger.exception(
                     "Polling остановлен из-за ошибки; повтор через %d сек.", delay
                 )
@@ -414,8 +449,7 @@ class ApplicationLifecycle:
             # Ошибка конфигурации (4xx от Telegram API). Polling позволяет
             # сохранить доступность бота до исправления домена или SSL.
             logger.error(
-                "❌ Ошибка конфигурации webhook: %s. "
-                "Переключаюсь на long polling.",
+                "❌ Ошибка конфигурации webhook: %s. Переключаюсь на long polling.",
                 e,
             )
             await self._start_polling_fallback()
@@ -423,15 +457,18 @@ class ApplicationLifecycle:
     async def _start_polling_fallback(self) -> None:
         """Запустить polling после неудачной настройки webhook."""
         assert self.bot is not None
+        assert self._app is not None
 
         await remove_webhook(self.bot)
-        if self._app is not None:
-            self._app.state.telegram_mode = "polling_fallback"
+        self._app.state.telegram_mode = "polling_fallback"
         if self.polling_task is None:
             self.polling_task = asyncio.create_task(
                 self._run_polling_resilient(),
                 name="telegram_polling_fallback",
             )
+            self._app.state.polling_task = self.polling_task
+            self._app.state.polling_restarts = self._polling_restarts
+            self._app.state.polling_last_error = self._polling_last_error
         logger.warning("⚠️ Резервный polling активирован")
 
     async def _cleanup_stuck_generations(self) -> None:
@@ -501,8 +538,11 @@ class ApplicationLifecycle:
 
         # Получаем информацию о боте для формирования ссылки
         bot_info = await self.bot.get_me()
+        if self._app is not None:
+            self._app.state.bot_username = bot_info.username
+            self._app.state.bot_id = bot_info.id
         bot_url = f"https://t.me/{bot_info.username}"
-        logger.info("🤖 Бот: %s", bot_url)
+        logger.info("🤖 Бот: %s (id=%d)", bot_url, bot_info.id)
 
         # Формируем URL админки если она включена
         if self.settings.admin.is_enabled:

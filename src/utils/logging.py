@@ -13,6 +13,7 @@ import logging
 import queue
 import sys
 import threading
+import time
 import traceback
 from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
@@ -33,6 +34,8 @@ LOGS_DIR = DATA_DIR / "logs"
 # Максимальная длина сообщения в Telegram (с запасом для форматирования)
 # Telegram API ограничивает сообщения до 4096 символов
 TELEGRAM_MESSAGE_MAX_LENGTH = 3500
+TELEGRAM_SEND_RETRIES = 3
+TELEGRAM_RETRY_DELAY_SECONDS = 2.0
 
 
 # ==============================================================================
@@ -280,12 +283,19 @@ class TelegramHandler(logging.Handler):
             if record is None:
                 break
 
-            try:
-                self._send_to_telegram(record)
-            except (OSError, RuntimeError, httpx.HTTPError) as e:
-                # Ошибки отправки в Telegram не должны ломать приложение
-                # Логируем в stderr чтобы не создавать рекурсию (иначе бесконечный цикл)
-                sys.stderr.write(f"[TelegramHandler] Ошибка отправки: {e}\n")
+            for attempt in range(1, TELEGRAM_SEND_RETRIES + 1):
+                try:
+                    self._send_to_telegram(record)
+                    break
+                except (OSError, RuntimeError, httpx.HTTPError) as e:
+                    # Сетевой сбой Telegram временный, поэтому повторяем отправку.
+                    # Ошибки пишем в stderr, чтобы не создавать рекурсию логгера.
+                    sys.stderr.write(
+                        f"[TelegramHandler] Ошибка отправки "
+                        f"(попытка {attempt}/{TELEGRAM_SEND_RETRIES}): {e}\n"
+                    )
+                    if attempt < TELEGRAM_SEND_RETRIES:
+                        time.sleep(TELEGRAM_RETRY_DELAY_SECONDS * attempt)
 
     def _send_to_telegram(self, record: logging.LogRecord) -> None:
         """Отправить запись лога в Telegram.
@@ -342,10 +352,21 @@ class TelegramHandler(logging.Handler):
             "Failed to fetch updates - TelegramNetworkError:"
         ):
             text = (
-                "Не удалось получить сообщения от Telegram из-за сбоя соединения. "
-                "Бот автоматически повторяет подключение. "
-                "Это уведомление само по себе не означает остановку бота. "
-                "Если бот перестал отвечать, проверьте логи и доступность Telegram."
+                "⚠️ Бот не может получить сообщения от Telegram из-за сетевого сбоя. "
+                "Он автоматически повторяет подключение. "
+                "Если ошибка повторяется или бот перестал отвечать, "
+                "перезапустите приложение и проверьте доступ к api.telegram.org."
+                f"\n\n<b>Технические подробности:</b>\n{text}"
+            )
+
+        if record.name == "src.app.lifecycle" and (
+            "Polling остановлен из-за ошибки" in record.getMessage()
+            or "Ошибка конфигурации webhook" in record.getMessage()
+        ):
+            text = (
+                "🚨 Обработка сообщений остановилась из-за ошибки запуска Telegram. "
+                "перезапустите приложение и проверьте настройки BOT__TOKEN, "
+                "APP__DOMAIN и доступ к Telegram API."
                 f"\n\n<b>Технические подробности:</b>\n{text}"
             )
 
