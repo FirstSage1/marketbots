@@ -18,6 +18,8 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any
 
+from aiogram.exceptions import TelegramConflictError
+
 from src.bot.loader import create_bot, create_dispatcher, register_bot_commands
 from src.db.base import DatabaseSession
 from src.db.exceptions import DatabaseError
@@ -109,6 +111,7 @@ class ApplicationLifecycle:
         """
         logger.info("Запуск приложения...")
         self._app = app
+        self._shutting_down = False
 
         # Проверяем статус миграций базы данных
         # Выводим предупреждение если миграции не применены
@@ -332,10 +335,17 @@ class ApplicationLifecycle:
 
         # Останавливаем polling (если был запущен)
         if self.polling_task is not None:
-            self.polling_task.cancel()
+            # Сначала просим Dispatcher завершить внутренний цикл polling.
+            # Это освобождает getUpdates до закрытия HTTP-сессии и следующего запуска.
+            if self.dp is not None:
+                with contextlib.suppress(RuntimeError):
+                    await self.dp.stop_polling()
+            if not self.polling_task.done():
+                self.polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.polling_task
             logger.debug("Polling остановлен")
+            self.polling_task = None
 
         # Закрываем сессию бота
         if self.bot is not None:
@@ -367,6 +377,21 @@ class ApplicationLifecycle:
                 )
             except asyncio.CancelledError:
                 raise
+            except TelegramConflictError as error:
+                # Telegram разрешает только один getUpdates на токен.
+                # Повторять запрос бессмысленно, пока другой процесс не остановлен.
+                self._polling_restarts += 1
+                self._polling_last_error = f"{type(error).__name__}: {error}"
+                if self._app is not None:
+                    self._app.state.polling_restarts = self._polling_restarts
+                    self._app.state.polling_last_error = self._polling_last_error
+                    self._app.state.telegram_mode = "polling_conflict"
+                logger.error(
+                    "Polling остановлен: токен уже используется другим процессом "
+                    "или webhook не освобождён. Остановите второй экземпляр и "
+                    "перезапустите только один процесс."
+                )
+                return
             except Exception as error:
                 self._polling_restarts += 1
                 self._polling_last_error = f"{type(error).__name__}: {error}"
@@ -424,8 +449,7 @@ class ApplicationLifecycle:
             # Ошибка конфигурации (4xx от Telegram API). Polling позволяет
             # сохранить доступность бота до исправления домена или SSL.
             logger.error(
-                "❌ Ошибка конфигурации webhook: %s. "
-                "Переключаюсь на long polling.",
+                "❌ Ошибка конфигурации webhook: %s. Переключаюсь на long polling.",
                 e,
             )
             await self._start_polling_fallback()
